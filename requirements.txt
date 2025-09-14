@@ -1,0 +1,2 @@
+# Include GUI packaging requirements for local builds
+pyinstaller
