@@ -9,7 +9,7 @@ Common commands and workflow
   pip install -r requirements.txt
   ```
 
-- CLI entry (Typer)
+- CLI entry (Typer) and LLM CLI
   ```bash path=null start=null
   # Initialize state for a target repo (creates .autotestgen/ inside the target)
   python -m app.main init /path/to/target/repo
@@ -22,6 +22,9 @@ Common commands and workflow
 
   # Serve the dashboard (open http://127.0.0.1:8000/?repo=/absolute/path/to/target/repo)
   python -m app.main serve
+
+  # Headless LLM generation (writes to ~/.hornet/<repo-name>/)
+  python -m app.llm.cli generate --repo /absolute/path/to/repo
   ```
 
 - Run a single function’s runner (after generate)
