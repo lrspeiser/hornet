@@ -91,6 +91,8 @@ class HornetApp(ttk.Frame):
         ttk.Button(top, text="Choose folder", command=self.choose_folder).pack(side="left")
         ttk.Button(top, text="Open tests folder", command=self.open_tests_folder).pack(side="left", padx=(8, 0))
         ttk.Button(top, text="Run tests", command=self.run_tests).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Set API Key", command=self.set_api_key).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Generate via OpenAI", command=self.generate_via_openai).pack(side="left", padx=(8, 0))
 
         # Info line
         self.info_var = tk.StringVar(value="")
@@ -157,6 +159,60 @@ class HornetApp(ttk.Frame):
                 continue
             candidates.append(p)
         return candidates
+
+    def set_api_key(self):
+        # Prompt in a simple dialog for API key; store in ~/.hornet/.env per OPENAI.md
+        dialog = tk.Toplevel(self.master)
+        dialog.title("Set OpenAI API Key")
+        dialog.geometry("520x160")
+        ttk.Label(dialog, text="OPENAI_API_KEY (will be written to ~/.hornet/.env)").pack(pady=(12,4))
+        entry = ttk.Entry(dialog, width=60, show="*")
+        entry.pack(padx=12)
+        status = tk.StringVar(value="")
+        ttk.Label(dialog, textvariable=status).pack(pady=4)
+        def save_key():
+            key = entry.get().strip()
+            if not key:
+                status.set("Enter a key.")
+                return
+            envp = Path.home() / ".hornet/.env"
+            envp.parent.mkdir(parents=True, exist_ok=True)
+            # Append or replace OPENAI_API_KEY line
+            content = ""
+            if envp.exists():
+                content = envp.read_text(encoding="utf-8")
+                lines = [ln for ln in content.splitlines() if not ln.startswith("OPENAI_API_KEY=")]
+                content = "\n".join(lines)
+            if content and not content.endswith("\n"):
+                content += "\n"
+            content += f"OPENAI_API_KEY={key}\n"
+            envp.write_text(content, encoding="utf-8")
+            status.set(f"Saved to {envp}")
+        ttk.Button(dialog, text="Save", command=save_key).pack(pady=(6,12))
+
+    def generate_via_openai(self):
+        if not self.selected_dir:
+            messagebox.showinfo(APP_NAME, "Select a folder first.")
+            return
+        try:
+            from app.llm.generate import generate_with_openai
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"OpenAI modules not available: {e}. See OPENAI.md")
+            return
+        base = ensure_store(self.selected_dir)["base"]
+        self.log("Calling OpenAI to generate PRD and tests… (see OPENAI.md)")
+        try:
+            written = generate_with_openai(self.selected_dir, base)
+            prd = written.get("requirements_md")
+            tests = written.get("tests", [])
+            if prd:
+                self.log(f"PRD → {prd}")
+            self.log(f"Generated {len(tests)} test runner(s)")
+            self.info_var.set(f"Tests: {base / 'tests'} | Runs: {base / 'runs'}")
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.log(f"OpenAI generation failed: {e}\n{tb}")
+            messagebox.showerror(APP_NAME, f"Generation failed: {e}\nSee log pane for details.")
 
     def run_tests(self):
         if not self.selected_dir or not self.store_paths:

@@ -1,2 +1,4 @@
 # Include GUI packaging requirements for local builds
 pyinstaller
+openai
+python-dotenv
