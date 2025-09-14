@@ -15,12 +15,12 @@ Security notes
 
 Usage in the Hornet app
 - Click “Choose folder” to select your target repo.
-- Click “Generate via OpenAI” to:
-  1) Snapshot source files (text only, size-limited) from the selected repo.
-  2) Send them to OpenAI to produce:
-     - requirements.md (reverse‑engineered PRD)
-     - *.py unit test runner scripts
-  3) Write outputs under ~/.hornet/<repo-name>/ (requirements.md and tests/).
+- Click “Generate via OpenAI”:
+  - The app now summarizes each file individually to avoid context limits, aggregates a repo-level PRD and test plan, then generates each test runner with small, separate calls.
+  - Outputs:
+    - requirements.md (reverse‑engineered PRD)
+    - tests/*.py (independent runner scripts)
+  - Outputs are written under ~/.hornet/<repo-name>/.
 - Then use “Run tests” to execute the generated runners.
 
 Notes

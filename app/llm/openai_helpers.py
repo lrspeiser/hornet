@@ -86,32 +86,23 @@ def read_repo_files(repo: Path, max_files: int = 200, max_total_bytes: int = 800
     return out
 
 
+# Legacy bulk prompt builder (no longer used by default); keeping for reference.
+# Large repos can exceed model context limits; see app/llm/generate.py for chunked pipeline.
 def build_prompt(files: List[Tuple[str, str]], repo_name: str) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
-    """
-    Construct a chat prompt asking for JSON with requirements_md and tests mapping.
-    Returns (messages, response_format)
-    """
     system = (
         "You are an expert software engineer and test architect. "
-        "Given a snapshot of a repository, produce: "
-        "(1) a concise reverse-engineered PRD in Markdown, and "
-        "(2) runnable Python test runner scripts that can be executed standalone (no pytest required). "
-        "Return a single JSON object with keys: requirements_md (string), tests (object mapping filename->content). "
-        "The test files must be self-contained scripts that import from the target repo via sys.path insertion using the HORNET_TARGET_REPO_PATH environment variable. "
-        "Prefer naming files as <function_name>__runner.py where possible. "
+        "Given a snapshot of a repository, produce: (1) a PRD and (2) test runners. "
+        "Return JSON with requirements_md and tests."
     )
-
-    header = f"Repository: {repo_name}\nFiles included: {len(files)}\n\n"
+    header = f"Repository: {repo_name} — files: {len(files)}\n"
     body_parts = []
     for rel, content in files:
         body_parts.append(f"===== FILE: {rel} =====\n{content}\n")
-    user = header + "\n".join(body_parts)
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": user},
+        {"role": "user", "content": header + "\n".join(body_parts)},
     ]
-    response_format = {"type": "json_object"}
-    return messages, response_format
+    return messages, {"type": "json_object"}
 
 
 def call_openai(messages: List[Dict[str, str]], model: str | None = None, response_format: Dict[str, Any] | None = None) -> str:
