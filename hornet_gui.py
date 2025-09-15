@@ -422,7 +422,7 @@ class HornetApp(ttk.Frame):
                 _append_line(gen_log, msg)
             from app.llm.generate import generate_with_openai
             default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
-            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
+            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress, debug=True)
             # Update meta on success
             meta.update({
                 "updated_at": int(time.time()),
@@ -506,7 +506,7 @@ class HornetApp(ttk.Frame):
                 _append_line(gen_log, msg)
             # Start with a broad set; the generator has its own fallbacks too.
             default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
-            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
+            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress, debug=True)
             prd = written.get("requirements_md")
             tests = written.get("tests", [])
             if prd:

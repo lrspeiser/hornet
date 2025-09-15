@@ -121,6 +121,7 @@ def generate_with_openai(
     include_ext: List[str] | None = None,
     max_files: int | None = None,
     progress: Optional[Callable[[str], None]] = None,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """
     Chunked generation: summarize files -> aggregate -> generate runners.
@@ -141,6 +142,7 @@ def generate_with_openai(
 
     repo_name = target_repo.name
     _emit(f"[1/3] Scanning files in {target_repo} (filters: {include_ext or 'all'}, max_files={max_files or '∞'})")
+    t_scan = time.time()
     paths = _iter_text_files(target_repo, include_ext=include_ext, max_files=max_files)
     if len(paths) == 0:
         # Fallback to defaults if explicit filters yielded nothing
@@ -150,17 +152,19 @@ def generate_with_openai(
         if len(paths) == 0:
             _emit("Still no files with defaults; scanning all text files (excluding known binaries)")
             paths = _iter_text_files(target_repo, include_ext=None, max_files=max_files)
-    _emit(f"Found {len(paths)} candidate file(s)")
+    _emit(f"Found {len(paths)} candidate file(s) in {int((time.time()-t_scan)*1000)} ms")
 
     # 1) Per-file summaries
     file_summaries: List[Dict[str, Any]] = []
+    t_sum_all = time.time()
     for idx, p in enumerate(paths, start=1):
         rel = str(p.relative_to(target_repo))
         _emit(f"Summarizing [{idx}/{len(paths)}] {rel}")
+        t_sum = time.time()
         content = _read_capped_text(p)
         messages, rf = _file_summary_messages(repo_name, rel, content)
         try:
-            summary = _chat_json(messages, rf, debug=True)
+            summary = _chat_json(messages, rf, debug=debug)
             # keep only compact fields to minimize next step
             compact = {
                 "file": summary.get("file", rel),
@@ -171,20 +175,26 @@ def generate_with_openai(
                 "test_suggestions": summary.get("test_suggestions", []),
             }
             file_summaries.append(compact)
-            _emit(f"✓ Summarized {rel} ({len(compact.get('exported', []))} exported, {len(compact.get('internal_calls', []))} calls)")
+            if debug:
+                _emit(f"✓ Summarized {rel} in {int((time.time()-t_sum)*1000)} ms (exported={len(compact.get('exported', []))}, calls={len(compact.get('internal_calls', []))})")
+            else:
+                _emit(f"✓ Summarized {rel}")
         except Exception as e:
             # If a single file fails to summarize, skip but continue
             file_summaries.append({"file": rel, "overview": "(summary failed)"})
             _emit(f"! Summary failed for {rel}: {e}")
     out["file_summaries_count"] = len(file_summaries)
+    if debug:
+        _emit(f"Summaries complete in {int((time.time()-t_sum_all)*1000)} ms")
 
     # 2) Aggregate into PRD + test plan
     _emit("[2/3] Aggregating repo-level PRD and test plan…")
+    t_agg = time.time()
     agg_messages, agg_rf = _aggregate_messages(repo_name, file_summaries)
-    aggregate = _chat_json(agg_messages, agg_rf, debug=True)
+    aggregate = _chat_json(agg_messages, agg_rf, debug=debug)
     prd_text = aggregate.get("requirements_md") or ""
     tests_plan = aggregate.get("tests_plan", [])
-    _emit(f"Aggregation complete: PRD={'yes' if prd_text else 'no'}, tests_plan items={len(tests_plan)}")
+    _emit(f"Aggregation complete: PRD={'yes' if prd_text else 'no'}, tests_plan items={len(tests_plan)} in {int((time.time()-t_agg)*1000)} ms")
 
     if prd_text:
         prd_path = out_base / "requirements.md"
@@ -201,12 +211,14 @@ def generate_with_openai(
     written_tests: List[str] = []
     if not tests_plan:
         _emit("No tests suggested by aggregation step — 0 runner(s) generated")
+    t_run_all = time.time()
     for i, item in enumerate(tests_plan, start=1):
         label = item.get("function") or item.get("file") or f"item{i}"
         _emit(f"[3/3] Generating runner [{i}/{len(tests_plan)}]: {label}")
         try:
             r_messages, r_rf = _runner_messages(repo_name, item)
-            runner_payload = _chat_json(r_messages, r_rf, debug=True)
+            t_run = time.time()
+            runner_payload = _chat_json(r_messages, r_rf, debug=debug)
             code = runner_payload.get("code") or runner_payload.get("script") or ""
             # Filename from function and/or file
             base_name = item.get("function") or Path(item.get("file", "test")).stem
@@ -214,12 +226,17 @@ def generate_with_openai(
             fp = tests_dir / safe
             fp.write_text(code, encoding="utf-8")
             written_tests.append(str(fp))
-            _emit(f"✓ Runner → {fp}")
+            if debug:
+                _emit(f"✓ Runner → {fp} in {int((time.time()-t_run)*1000)} ms")
+            else:
+                _emit(f"✓ Runner → {fp}")
         except Exception as e:
             # Skip that one test generator failure
             _emit(f"! Runner generation failed for {label}: {e}")
             continue
     out["tests"] = written_tests
 
+    if debug:
+        _emit(f"Runners complete in {int((time.time()-t_run_all)*1000)} ms")
     _emit(f"Done — PRD: {'yes' if out.get('requirements_md') else 'no'}, runners: {len(written_tests)}")
     return out
