@@ -566,6 +566,11 @@ class HornetApp(ttk.Frame):
                 try:
                     # Provide __name__ == "__main__" and expose HORNET_TARGET_REPO_PATH
                     g = {"__name__": "__main__"}
+                    # Prepend the target repo to sys.path so runners can `from main import ...`
+                    import sys as _sys
+                    _orig_sys_path = list(_sys.path)
+                    if target_repo not in _sys.path:
+                        _sys.path.insert(0, target_repo)
                     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
                         runpy.run_path(str(script), init_globals=g)
                 except SystemExit as e:
@@ -573,6 +578,11 @@ class HornetApp(ttk.Frame):
                 except Exception:
                     status = "fail"
                     traceback.print_exc(file=buf_err)
+                finally:
+                    try:
+                        _sys.path = _orig_sys_path  # restore
+                    except Exception:
+                        pass
                 dt_ms = int((time.time() - t0) * 1000)
                 out_s = buf_out.getvalue().strip()
                 err_s = buf_err.getvalue().strip()
@@ -581,6 +591,7 @@ class HornetApp(ttk.Frame):
                     json.dumps({
                         "script": script.name,
                         "target_repo": target_repo,
+                        "sys_path_prepended": target_repo,
                         "status": status,
                         "duration_ms": dt_ms,
                         "stdout": out_s,

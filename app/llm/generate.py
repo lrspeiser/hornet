@@ -94,6 +94,7 @@ def _runner_messages(repo_name: str, func_item: Dict[str, Any]) -> Tuple[List[Di
     system = (
         "Generate a standalone Python runner script for a single function. "
         "The script must import from the target repo by inserting HORNET_TARGET_REPO_PATH into sys.path. "
+        "Also, before importing, the script should check os.environ['HORNET_TARGET_REPO_PATH'] and prepend it to sys.path if present. "
         "It should execute a list of example cases, capture pass/fail and exceptions, and print a JSON summary to stdout. "
         "Do NOT use pytest. Return the script text directly as a JSON string in the 'code' key."
     )
