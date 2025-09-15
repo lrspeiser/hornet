@@ -216,6 +216,7 @@ class HornetApp(ttk.Frame):
         ttk.Button(proj_top, text="Open tests", command=self.open_selected_project_tests).pack(side="left", padx=(8,0))
         ttk.Button(proj_top, text="Open logs", command=self.open_selected_project_logs).pack(side="left", padx=(8,0))
         ttk.Button(proj_top, text="Update via OpenAI", command=self.update_selected_project).pack(side="left", padx=(8,0))
+        ttk.Button(proj_top, text="Copy recent logs", command=self.copy_recent_logs).pack(side="left", padx=(8,0))
         self.projects_list = tk.Listbox(proj_frame, height=6)
         self.projects_list.pack(fill="x", padx=8, pady=(0,8))
         self._projects_cache: list[dict] = []
@@ -371,6 +372,31 @@ class HornetApp(ttk.Frame):
             self.run_tests()
         else:
             messagebox.showinfo(APP_NAME, "No linked repository path found for this project. Click 'Load' then 'Choose folder' to link it.")
+
+    def copy_recent_logs(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        base = proj["base"]
+        logs_dir = base / "logs"
+        if not logs_dir.exists():
+            messagebox.showinfo(APP_NAME, "No logs directory yet for this project.")
+            return
+        # Collect last N log files and copy to Desktop for convenience
+        files = sorted(logs_dir.glob("generate-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        to_copy = files[:5]
+        if not to_copy:
+            messagebox.showinfo(APP_NAME, "No generation logs found to copy.")
+            return
+        dest_dir = Path.home() / "Desktop" / f"hornet-logs-{time.strftime('%Y%m%d-%H%M%S')}"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for f in to_copy:
+                (dest_dir / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+            messagebox.showinfo(APP_NAME, f"Copied {len(to_copy)} log(s) to {dest_dir}")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to copy logs: {e}")
 
     def update_selected_project(self):
         proj = self._selected_project()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import time
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 from dotenv import load_dotenv
@@ -11,6 +12,19 @@ try:
     from openai import OpenAI
 except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore
+
+# Minimal app-log helper (mirrors GUI behavior) — logs to ~/.hornet/logs/hornet.log
+def _ts() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+def _append_app_log(line: str) -> None:
+    try:
+        log_path = Path.home() / ".hornet/logs/hornet.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"[{_ts()}] {line}\n")
+    except Exception:
+        pass
 
 
 def load_api_key() -> str | None:
@@ -105,7 +119,7 @@ def build_prompt(files: List[Tuple[str, str]], repo_name: str) -> Tuple[List[Dic
     return messages, {"type": "json_object"}
 
 
-def call_openai(messages: List[Dict[str, str]], model: str | None = None, response_format: Dict[str, Any] | None = None) -> str:
+def call_openai(messages: List[Dict[str, str]], model: str | None = None, response_format: Dict[str, Any] | None = None, debug: bool = False) -> str:
     if OpenAI is None:
         raise RuntimeError("openai package not available. Did you install 'openai'? See OPENAI.md.")
     key = load_api_key()
@@ -117,11 +131,27 @@ def call_openai(messages: List[Dict[str, str]], model: str | None = None, respon
     if response_format:
         # Not all models support response_format; try, then fall back
         kwargs["response_format"] = response_format
+
+    if debug:
+        try:
+            total_chars = sum(len(m.get("content", "")) for m in messages)
+            _append_app_log(f"LLM request: model={model}, messages={len(messages)}, total_chars={total_chars}, response_format={'yes' if response_format else 'no'}")
+        except Exception:
+            pass
+
     try:
         resp = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
-        return resp.choices[0].message.content or ""
-    except Exception:
+        content = resp.choices[0].message.content or ""
+        if debug:
+            _append_app_log(f"LLM response: chars={len(content)}")
+        return content
+    except Exception as e:
+        if debug:
+            _append_app_log(f"LLM error on first attempt: {e}")
         # Retry without response_format
         kwargs.pop("response_format", None)
         resp = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
-        return resp.choices[0].message.content or ""
+        content = resp.choices[0].message.content or ""
+        if debug:
+            _append_app_log(f"LLM response (no response_format): chars={len(content)}")
+        return content

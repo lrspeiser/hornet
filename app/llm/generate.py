@@ -105,8 +105,8 @@ def _runner_messages(repo_name: str, func_item: Dict[str, Any]) -> Tuple[List[Di
     return messages, {"type": "json_object"}
 
 
-def _chat_json(messages: List[Dict[str, str]], response_format: Dict[str, Any]) -> Dict[str, Any]:
-    raw = call_openai(messages, response_format=response_format)
+def _chat_json(messages: List[Dict[str, str]], response_format: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
+    raw = call_openai(messages, response_format=response_format, debug=debug)
     try:
         return json.loads(raw)
     except Exception:
@@ -160,7 +160,7 @@ def generate_with_openai(
         content = _read_capped_text(p)
         messages, rf = _file_summary_messages(repo_name, rel, content)
         try:
-            summary = _chat_json(messages, rf)
+            summary = _chat_json(messages, rf, debug=True)
             # keep only compact fields to minimize next step
             compact = {
                 "file": summary.get("file", rel),
@@ -181,7 +181,7 @@ def generate_with_openai(
     # 2) Aggregate into PRD + test plan
     _emit("[2/3] Aggregating repo-level PRD and test plan…")
     agg_messages, agg_rf = _aggregate_messages(repo_name, file_summaries)
-    aggregate = _chat_json(agg_messages, agg_rf)
+    aggregate = _chat_json(agg_messages, agg_rf, debug=True)
     prd_text = aggregate.get("requirements_md") or ""
     tests_plan = aggregate.get("tests_plan", [])
     _emit(f"Aggregation complete: PRD={'yes' if prd_text else 'no'}, tests_plan items={len(tests_plan)}")
@@ -206,7 +206,7 @@ def generate_with_openai(
         _emit(f"[3/3] Generating runner [{i}/{len(tests_plan)}]: {label}")
         try:
             r_messages, r_rf = _runner_messages(repo_name, item)
-            runner_payload = _chat_json(r_messages, r_rf)
+            runner_payload = _chat_json(r_messages, r_rf, debug=True)
             code = runner_payload.get("code") or runner_payload.get("script") or ""
             # Filename from function and/or file
             base_name = item.get("function") or Path(item.get("file", "test")).stem
