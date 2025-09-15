@@ -31,12 +31,44 @@ def _write_meta(base: Path, meta: dict) -> None:
         pass
 
 
+def _infer_repo_path_from_runs(base: Path) -> str | None:
+    runs = base / "runs"
+    if not runs.exists():
+        return None
+    latest = None
+    latest_mtime = -1.0
+    for p in runs.glob("*.log"):
+        try:
+            m = p.stat().st_mtime
+            if m > latest_mtime:
+                latest = p
+                latest_mtime = m
+        except Exception:
+            continue
+    if not latest:
+        return None
+    try:
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+        rp = payload.get("target_repo")
+        if isinstance(rp, str) and rp:
+            return rp
+    except Exception:
+        return None
+    return None
+
+
 def _list_projects() -> list[dict]:
     projects: list[dict] = []
     if not STORE_ROOT.exists():
         return projects
     for base in sorted([p for p in STORE_ROOT.iterdir() if p.is_dir()]):
         meta = _read_meta(base)
+        # Backfill missing repo_path from latest run log if possible
+        if not meta.get("repo_path"):
+            rp = _infer_repo_path_from_runs(base)
+            if rp:
+                meta["repo_path"] = rp
+                _write_meta(base, meta)
         tests = base / "tests"
         projects.append({
             "slug": base.name,
@@ -468,11 +500,13 @@ class HornetApp(ttk.Frame):
         self.status_var.set(f"Done — pass: {passed}, fail: {failed}")
         self.log(f"Finished. pass={passed} fail={failed}")
 
-        # Update meta last_run
+        # Update meta last_run and repo_path
         try:
             base = self.store_paths["base"]
             meta = _read_meta(base)
             meta["last_run"] = int(time.time())
+            if self.selected_dir:
+                meta["repo_path"] = str(self.selected_dir)
             _write_meta(base, meta)
         except Exception:
             pass
