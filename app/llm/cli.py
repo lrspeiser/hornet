@@ -16,6 +16,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("generate", help="subcommand", nargs="?")
     p.add_argument("--repo", required=False, help="Path to target repository")
     p.add_argument("--out", required=False, help="Output base directory (defaults to ~/.hornet/<repo-name>)")
+    p.add_argument("--ext", action="append", help="Include only files with these extensions (e.g., --ext .py --ext .ts)")
+    p.add_argument("--max-files", type=int, default=400, help="Max files to process (default 400)")
     args = p.parse_args(argv)
 
     if args.generate != "generate":
@@ -36,7 +38,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         out_base = Path.home() / ".hornet" / slugify(repo.name)
 
-    out = generate_with_openai(repo, out_base)
+    def _print(msg: str):
+        print(msg, flush=True)
+    out = generate_with_openai(repo, out_base, include_ext=args.ext, max_files=args.max_files, progress=_print)
     print("== Hornet LLM generation complete ==")
     if out.get("requirements_md"):
         print(f"PRD: {out['requirements_md']}")

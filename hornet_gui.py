@@ -202,7 +202,9 @@ class HornetApp(ttk.Frame):
         base = ensure_store(self.selected_dir)["base"]
         self.log("Calling OpenAI to generate PRD and tests… (see OPENAI.md)")
         try:
-            written = generate_with_openai(self.selected_dir, base)
+            def _progress(msg: str):
+                self.log(msg)
+            written = generate_with_openai(self.selected_dir, base, include_ext=[".py"], max_files=400, progress=_progress)
             prd = written.get("requirements_md")
             tests = written.get("tests", [])
             if prd:

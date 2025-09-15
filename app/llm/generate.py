@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Callable, Optional
 from .openai_helpers import call_openai
 
 # Chunked pipeline to avoid context-limit errors and to improve quality:
@@ -14,8 +14,11 @@ BIN_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".gz", ".t
 MAX_FILE_CHARS = 40_000  # cap per-file content
 
 
-def _iter_text_files(repo: Path) -> List[Path]:
+def _iter_text_files(repo: Path, include_ext: List[str] | None = None, max_files: int | None = None) -> List[Path]:
     files: List[Path] = []
+    inc_set = None
+    if include_ext:
+        inc_set = {e.strip().lower() for e in include_ext if e.strip()}
     for p in sorted(repo.rglob("*")):
         rel = p.relative_to(repo)
         if any(part in SKIP_DIRS for part in rel.parts):
@@ -23,6 +26,8 @@ def _iter_text_files(repo: Path) -> List[Path]:
         if p.is_dir():
             continue
         if p.suffix.lower() in BIN_EXTS:
+            continue
+        if inc_set is not None and p.suffix.lower() not in inc_set:
             continue
         try:
             b = p.read_bytes()
@@ -32,6 +37,8 @@ def _iter_text_files(repo: Path) -> List[Path]:
         if b"\x00" in b:
             continue
         files.append(p)
+        if max_files is not None and len(files) >= max_files:
+            break
     return files
 
 
@@ -103,7 +110,13 @@ def _chat_json(messages: List[Dict[str, str]], response_format: Dict[str, Any]) 
         return json.loads(stripped)
 
 
-def generate_with_openai(target_repo: Path, out_base: Path) -> Dict[str, Any]:
+def generate_with_openai(
+    target_repo: Path,
+    out_base: Path,
+    include_ext: List[str] | None = None,
+    max_files: int | None = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
     """
     Chunked generation: summarize files -> aggregate -> generate runners.
     Outputs under out_base:
@@ -114,13 +127,23 @@ def generate_with_openai(target_repo: Path, out_base: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     out_base.mkdir(parents=True, exist_ok=True)
 
+    def _emit(msg: str):
+        if progress:
+            try:
+                progress(msg)
+            except Exception:
+                pass
+
     repo_name = target_repo.name
-    paths = _iter_text_files(target_repo)
+    _emit(f"[1/3] Scanning files in {target_repo} (filters: {include_ext or 'all'}, max_files={max_files or '∞'})")
+    paths = _iter_text_files(target_repo, include_ext=include_ext, max_files=max_files)
+    _emit(f"Found {len(paths)} candidate file(s)")
 
     # 1) Per-file summaries
     file_summaries: List[Dict[str, Any]] = []
-    for p in paths:
+    for idx, p in enumerate(paths, start=1):
         rel = str(p.relative_to(target_repo))
+        _emit(f"Summarizing [{idx}/{len(paths)}] {rel}")
         content = _read_capped_text(p)
         messages, rf = _file_summary_messages(repo_name, rel, content)
         try:
@@ -135,28 +158,39 @@ def generate_with_openai(target_repo: Path, out_base: Path) -> Dict[str, Any]:
                 "test_suggestions": summary.get("test_suggestions", []),
             }
             file_summaries.append(compact)
-        except Exception:
+            _emit(f"✓ Summarized {rel} ({len(compact.get('exported', []))} exported, {len(compact.get('internal_calls', []))} calls)")
+        except Exception as e:
             # If a single file fails to summarize, skip but continue
             file_summaries.append({"file": rel, "overview": "(summary failed)"})
+            _emit(f"! Summary failed for {rel}: {e}")
     out["file_summaries_count"] = len(file_summaries)
 
     # 2) Aggregate into PRD + test plan
+    _emit("[2/3] Aggregating repo-level PRD and test plan…")
     agg_messages, agg_rf = _aggregate_messages(repo_name, file_summaries)
     aggregate = _chat_json(agg_messages, agg_rf)
     prd_text = aggregate.get("requirements_md") or ""
     tests_plan = aggregate.get("tests_plan", [])
+    _emit(f"Aggregation complete: PRD={'yes' if prd_text else 'no'}, tests_plan items={len(tests_plan)}")
 
     if prd_text:
         prd_path = out_base / "requirements.md"
         prd_path.write_text(prd_text, encoding="utf-8")
         out["requirements_md"] = str(prd_path)
+        _emit(f"PRD → {prd_path}")
+    else:
+        _emit("No PRD text returned from aggregation step")
 
     # 3) Generate runners, one per plan item
     tests_dir = out_base / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
 
     written_tests: List[str] = []
-    for item in tests_plan:
+    if not tests_plan:
+        _emit("No tests suggested by aggregation step — 0 runner(s) generated")
+    for i, item in enumerate(tests_plan, start=1):
+        label = item.get("function") or item.get("file") or f"item{i}"
+        _emit(f"[3/3] Generating runner [{i}/{len(tests_plan)}]: {label}")
         try:
             r_messages, r_rf = _runner_messages(repo_name, item)
             runner_payload = _chat_json(r_messages, r_rf)
@@ -167,9 +201,12 @@ def generate_with_openai(target_repo: Path, out_base: Path) -> Dict[str, Any]:
             fp = tests_dir / safe
             fp.write_text(code, encoding="utf-8")
             written_tests.append(str(fp))
-        except Exception:
+            _emit(f"✓ Runner → {fp}")
+        except Exception as e:
             # Skip that one test generator failure
+            _emit(f"! Runner generation failed for {label}: {e}")
             continue
     out["tests"] = written_tests
 
+    _emit(f"Done — PRD: {'yes' if out.get('requirements_md') else 'no'}, runners: {len(written_tests)}")
     return out
