@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import sys, os, io, traceback, time, runpy, re, json, contextlib
+import sys, os, io, traceback, time, runpy, re, json, contextlib, subprocess
 
 APP_NAME = "Hornet"
 STORE_ROOT = Path.home() / ".hornet"
@@ -492,8 +492,23 @@ class HornetApp(ttk.Frame):
         try:
             from app.llm.generate import generate_with_openai
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"OpenAI modules not available: {e}. See OPENAI.md")
-            return
+            # Attempt to adjust sys.path for bundled app and retry
+            try:
+                import importlib
+                bundle_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+                candidates = [
+                    Path(__file__).resolve().parent,
+                    Path(__file__).resolve().parent / "app",
+                    bundle_dir,
+                    bundle_dir / "app",
+                ]
+                for p in candidates:
+                    if str(p) not in sys.path and p.exists():
+                        sys.path.insert(0, str(p))
+                generate_with_openai = importlib.import_module("app.llm.generate").generate_with_openai  # type: ignore[attr-defined]
+            except Exception as e2:
+                messagebox.showerror(APP_NAME, f"OpenAI modules not available: {e2}. See OPENAI.md")
+                return
         base = ensure_store(self.selected_dir)["base"]
         self.log("Calling OpenAI to generate PRD and tests… (see OPENAI.md)")
         try:
@@ -549,46 +564,64 @@ class HornetApp(ttk.Frame):
         target_repo = str(self.selected_dir)
         tests_dir = self.store_paths["tests"]
         runs_dir = self.store_paths["runs"]
+        base_dir = self.store_paths["base"]
         ts_label = time.strftime("%Y%m%d-%H%M%S")
         summary = []
         self.clear_log()
         self.log(f"Running {len(scripts)} script(s) against: {target_repo}")
 
+        # Determine Python interpreter to use (target venv > project venv > system)
+        def _find_interpreter() -> str:
+            tvenv = Path(target_repo) / ".venv" / "bin" / "python"
+            if tvenv.exists():
+                return str(tvenv)
+            pvenv = base_dir / ".venv" / "bin" / "python"
+            if not pvenv.exists():
+                # create project venv and install requirements if present
+                self.log("Creating project venv (~/.hornet/<slug>/.venv)…")
+                subprocess.run([sys.executable, "-m", "venv", str(base_dir / ".venv")], check=False)
+                req = Path(target_repo) / "requirements.txt"
+                if req.exists():
+                    self.log("Installing requirements.txt into project venv…")
+                    subprocess.run([str(pvenv), "-m", "pip", "install", "-r", str(req)], check=False)
+            return str(pvenv) if pvenv.exists() else sys.executable
+
+        interpreter = _find_interpreter()
+        self.log(f"Using interpreter: {interpreter}")
+
         # Ensure target repo path available to children
         prev_env = os.environ.get("HORNET_TARGET_REPO_PATH")
         os.environ["HORNET_TARGET_REPO_PATH"] = target_repo
         try:
-        try:
-        try:
-        try:
             for script in scripts:
                 self.log(f"▶ {script.name}")
-                buf_out, buf_err = io.StringIO(), io.StringIO()
                 t0 = time.time()
-                status = "fail"  # default to fail
-                try:
-                    # Provide __name__ == "__main__" and expose HORNET_TARGET_REPO_PATH
-                    g = {"__name__": "__main__"}
-                    # Prepend the target repo to sys.path so runners can `from main import ...`
-                    import sys as _sys
-                    _orig_sys_path = list(_sys.path)
-                    if target_repo not in _sys.path:
-                        _sys.path.insert(0, target_repo)
-                    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-                        runpy.run_path(str(script), init_globals=g)
-                except SystemExit as e:
-                    status = "fail" if int(getattr(e, "code", 1) or 1) != 0 else "pass"
-                except Exception:
-                    status = "fail"
-                    traceback.print_exc(file=buf_err)
-                finally:
-                    try:
-                        _sys.path = _orig_sys_path  # restore
-                    except Exception:
-                        pass
+                env = os.environ.copy()
+                env["HORNET_TARGET_REPO_PATH"] = target_repo
+                # Prepend repo to PYTHONPATH for import resolution
+                env["PYTHONPATH"] = f"{target_repo}:{env.get('PYTHONPATH','')}" if sys.platform != "win32" else f"{target_repo};{env.get('PYTHONPATH','')}"
+                # Run once
+                proc = subprocess.run([interpreter, str(script)], cwd=target_repo, text=True, capture_output=True, env=env)
+                out_s, err_s = proc.stdout.strip(), proc.stderr.strip()
+                status = "pass" if proc.returncode == 0 else "fail"
+
+                # Auto-install missing module if ModuleNotFoundError and retry once
+                pip_installed = None
+                if status == "fail":
+                    m = re.search(r"ModuleNotFoundError:\s*No module named ['\"]([^'\"]+)['\"]", err_s)
+                    if m:
+                        missing = m.group(1)
+                        # Basic guard to avoid malicious strings
+                        if re.fullmatch(r"[A-Za-z0-9_.\-]+", missing):
+                            self.log(f"   Missing module detected: {missing} — attempting pip install…")
+                            install = subprocess.run([interpreter, "-m", "pip", "install", missing], cwd=target_repo, text=True, capture_output=True)
+                            pip_installed = {"package": missing, "returncode": install.returncode, "stdout": install.stdout[-500:], "stderr": install.stderr[-500:]}
+                            # Retry
+                            proc = subprocess.run([interpreter, str(script)], cwd=target_repo, text=True, capture_output=True, env=env)
+                            out_s, err_s = proc.stdout.strip(), proc.stderr.strip()
+                            status = "pass" if proc.returncode == 0 else "fail"
+
                 dt_ms = int((time.time() - t0) * 1000)
-                out_s = buf_out.getvalue().strip()
-                err_s = buf_err.getvalue().strip()
                 log_path = runs_dir / f"{ts_label}__{script.stem}.log"
 
                 # --- Result aggregation from per-case JSON --- #
@@ -601,26 +634,27 @@ class HornetApp(ttk.Frame):
                             pass  # ignore non-json lines
                 case_passed = sum(1 for c in case_results if c.get("status") == "pass")
                 case_total = len(case_results)
-                final_status = "pass" if case_total > 0 and case_passed == case_total else "fail"
+                final_status = "pass" if (case_total > 0 and case_passed == case_total and status == "pass") else "fail"
                 if final_status == "pass":
                     passed += 1
                 else:
                     failed += 1
 
-                log_path.write_text(
-                    json.dumps({
-                        "script": script.name,
-                        "target_repo": target_repo,
-                        "sys_path_prepended": target_repo,
-                        "status": final_status,
-                        "duration_ms": dt_ms,
-                        "cases_passed": case_passed,
-                        "cases_total": case_total,
-                        "raw_stdout": out_s,
-                        "raw_stderr": err_s,
-                    }, indent=2),
-                    encoding="utf-8",
-                )
+                log_payload = {
+                    "script": script.name,
+                    "target_repo": target_repo,
+                    "interpreter": interpreter,
+                    "status": final_status,
+                    "duration_ms": dt_ms,
+                    "cases_passed": case_passed,
+                    "cases_total": case_total,
+                    "raw_stdout": out_s,
+                    "raw_stderr": err_s,
+                }
+                if pip_installed is not None:
+                    log_payload["pip_install_attempt"] = pip_installed
+                log_path.write_text(json.dumps(log_payload, indent=2), encoding="utf-8")
+
                 self.log(f"   status={final_status} ({case_passed}/{case_total} passed) duration={dt_ms}ms -> {log_path.name}")
                 # Log first few lines of stdout/stderr if any
                 if out_s:
@@ -631,21 +665,11 @@ class HornetApp(ttk.Frame):
         except Exception as e:
             self.log(f"Error during test run: {e}")
             traceback.print_exc()
-            self.log(f"Error during test run: {e}")
-            traceback.print_exc()
-            self.log(f"Error during test run: {e}")
-            traceback.print_exc()
         # Update summary at the end
         pass_sum = sum(1 for _, s, _, _, _ in summary if s == "pass")
         fail_sum = len(summary) - pass_sum
         self.status_var.set(f"Done — pass: {pass_sum}, fail: {fail_sum}")
         self.log(f"Finished. pass={pass_sum} fail={fail_sum}")
-
-        # Update meta last_run and repo_path
-        passed = sum(1 for _, s, _ in summary if s == "pass")
-        failed = sum(1 for _, s, _ in summary if s == "fail")
-        self.status_var.set(f"Done — pass: {passed}, fail: {failed}")
-        self.log(f"Finished. pass={passed} fail={failed}")
 
         # Update meta last_run and repo_path
         try:
