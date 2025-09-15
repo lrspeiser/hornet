@@ -8,6 +8,48 @@ import sys, os, io, traceback, time, runpy, re, json, contextlib
 APP_NAME = "Hornet"
 STORE_ROOT = Path.home() / ".hornet"
 
+# ---- Project index helpers (stored alongside tests) ----
+
+def _meta_path(base: Path) -> Path:
+    return base / "meta.json"
+
+
+def _read_meta(base: Path) -> dict:
+    mp = _meta_path(base)
+    if mp.exists():
+        try:
+            return json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _write_meta(base: Path, meta: dict) -> None:
+    try:
+        _meta_path(base).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _list_projects() -> list[dict]:
+    projects: list[dict] = []
+    if not STORE_ROOT.exists():
+        return projects
+    for base in sorted([p for p in STORE_ROOT.iterdir() if p.is_dir()]):
+        meta = _read_meta(base)
+        tests = base / "tests"
+        projects.append({
+            "slug": base.name,
+            "base": base,
+            "tests": tests,
+            "repo_path": meta.get("repo_path"),
+            "updated_at": meta.get("updated_at"),
+            "last_run": meta.get("last_run"),
+            "tests_count": meta.get("tests_count"),
+            "prd_path": meta.get("prd_path"),
+        })
+    return projects
+
 
 def slugify(name: str) -> str:
     # Safe folder name for filesystem
@@ -66,6 +108,15 @@ This folder stores your Hornet-managed unit test runners for: {selected_dir}
             encoding="utf-8",
         )
 
+    # Update meta
+    meta = _read_meta(base)
+    now = int(time.time())
+    if "created_at" not in meta:
+        meta["created_at"] = now
+    meta["repo_path"] = str(selected_dir)
+    meta["slug"] = base.name
+    _write_meta(base, meta)
+
     return {"base": base, "tests": tests, "runs": runs}
 
 
@@ -97,6 +148,21 @@ class HornetApp(ttk.Frame):
         # Info line
         self.info_var = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.info_var).pack(fill="x", padx=12)
+
+        # Projects list
+        proj_frame = ttk.LabelFrame(self, text="Projects")
+        proj_frame.pack(fill="x", padx=12, pady=(8, 0))
+        proj_top = ttk.Frame(proj_frame)
+        proj_top.pack(fill="x", padx=8, pady=8)
+        ttk.Button(proj_top, text="Refresh", command=self.refresh_projects).pack(side="left")
+        ttk.Button(proj_top, text="Load", command=self.load_selected_project).pack(side="left", padx=(8,0))
+        ttk.Button(proj_top, text="Run", command=self.run_selected_project_tests).pack(side="left", padx=(8,0))
+        ttk.Button(proj_top, text="Open tests", command=self.open_selected_project_tests).pack(side="left", padx=(8,0))
+        ttk.Button(proj_top, text="Update via OpenAI", command=self.update_selected_project).pack(side="left", padx=(8,0))
+        self.projects_list = tk.Listbox(proj_frame, height=6)
+        self.projects_list.pack(fill="x", padx=8, pady=(0,8))
+        self._projects_cache: list[dict] = []
+        self.refresh_projects()
 
         # Log output
         log_frame = ttk.Frame(self)
@@ -148,6 +214,111 @@ class HornetApp(ttk.Frame):
                 os.system(f"xdg-open '{tests}'")
         except Exception as e:
             messagebox.showerror(APP_NAME, f"Failed to open folder: {e}")
+
+    # ---- Projects panel helpers ----
+    def refresh_projects(self):
+        self._projects_cache = _list_projects()
+        self.projects_list.delete(0, "end")
+        for proj in self._projects_cache:
+            label = f"{proj['slug']}"
+            if proj.get("repo_path"):
+                label += f" — {proj['repo_path']}"
+            else:
+                label += " — (repo not linked)"
+            self.projects_list.insert("end", label)
+
+    def _selected_project(self) -> dict | None:
+        sel = self.projects_list.curselection()
+        if not sel:
+            return None
+        idx = sel[0]
+        if 0 <= idx < len(self._projects_cache):
+            return self._projects_cache[idx]
+        return None
+
+    def load_selected_project(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        base = proj["base"]
+        meta = _read_meta(base)
+        self.store_paths = {"base": base, "tests": base / "tests", "runs": base / "runs"}
+        repo_path = meta.get("repo_path")
+        if repo_path:
+            self.selected_dir = Path(repo_path)
+            self.path_var.set(repo_path)
+        else:
+            self.selected_dir = None
+            self.path_var.set(f"Project: {proj['slug']} (no linked repo)")
+        self.info_var.set(f"Tests: {self.store_paths['tests']} | Runs: {self.store_paths['runs']}")
+        self.log(f"Loaded project {proj['slug']}")
+
+    def open_selected_project_tests(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        tests = proj["tests"]
+        try:
+            if sys.platform == "darwin":
+                os.system(f"open '{tests}'")
+            elif os.name == "nt":
+                os.startfile(str(tests))  # type: ignore[attr-defined]
+            else:
+                os.system(f"xdg-open '{tests}'")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to open folder: {e}")
+
+    def run_selected_project_tests(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        base = proj["base"]
+        meta = _read_meta(base)
+        repo_path = meta.get("repo_path")
+        if repo_path:
+            self.selected_dir = Path(repo_path)
+            self.store_paths = {"base": base, "tests": base / "tests", "runs": base / "runs"}
+            self.path_var.set(repo_path)
+            self.run_tests()
+        else:
+            messagebox.showinfo(APP_NAME, "No linked repository path found for this project. Click 'Load' then 'Choose folder' to link it.")
+
+    def update_selected_project(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        base = proj["base"]
+        meta = _read_meta(base)
+        repo_path = meta.get("repo_path")
+        if not repo_path:
+            messagebox.showinfo(APP_NAME, "No linked repository path. Click 'Load' then 'Choose folder' to link it, or select a folder and re-run generate.")
+            return
+        # Use existing generate flow but force base and selected_dir
+        try:
+            self.selected_dir = Path(repo_path)
+            self.store_paths = {"base": base, "tests": base / "tests", "runs": base / "runs"}
+            def _progress(msg: str):
+                self.log(msg)
+            from app.llm.generate import generate_with_openai
+            default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
+            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
+            # Update meta on success
+            meta.update({
+                "updated_at": int(time.time()),
+                "tests_count": len(written.get("tests", [])),
+                "prd_path": written.get("requirements_md"),
+            })
+            _write_meta(base, meta)
+            self.info_var.set(f"Tests: {self.store_paths['tests']} | Runs: {self.store_paths['runs']}")
+            self.log(f"Update complete. Generated {len(written.get('tests', []))} runner(s)")
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.log(f"Update via OpenAI failed: {e}\n{tb}")
+            messagebox.showerror(APP_NAME, f"Update failed: {e}\nSee log pane for details.")
 
     def _discover_test_scripts(self) -> list[Path]:
         if not self.store_paths:
@@ -219,9 +390,20 @@ class HornetApp(ttk.Frame):
             messagebox.showerror(APP_NAME, f"Generation failed: {e}\nSee log pane for details.")
 
     def run_tests(self):
-        if not self.selected_dir or not self.store_paths:
-            messagebox.showinfo(APP_NAME, "Select a folder first.")
+        if not self.store_paths:
+            messagebox.showinfo(APP_NAME, "Select a folder or load a project first.")
             return
+        if not self.selected_dir:
+            # Try to infer from meta
+            base = self.store_paths["base"]
+            meta = _read_meta(base)
+            rp = meta.get("repo_path")
+            if rp:
+                self.selected_dir = Path(rp)
+                self.path_var.set(rp)
+            else:
+                messagebox.showinfo(APP_NAME, "No linked repository path. Use 'Choose folder' or 'Load' a project with a linked repo.")
+                return
         scripts = self._discover_test_scripts()
         if not scripts:
             messagebox.showinfo(APP_NAME, "No test scripts found in tests folder. Add *.py files and try again.")
@@ -285,6 +467,15 @@ class HornetApp(ttk.Frame):
         failed = sum(1 for _, s, _ in summary if s == "fail")
         self.status_var.set(f"Done — pass: {passed}, fail: {failed}")
         self.log(f"Finished. pass={passed} fail={failed}")
+
+        # Update meta last_run
+        try:
+            base = self.store_paths["base"]
+            meta = _read_meta(base)
+            meta["last_run"] = int(time.time())
+            _write_meta(base, meta)
+        except Exception:
+            pass
 
 
 def main():
