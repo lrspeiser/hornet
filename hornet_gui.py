@@ -204,7 +204,9 @@ class HornetApp(ttk.Frame):
         try:
             def _progress(msg: str):
                 self.log(msg)
-            written = generate_with_openai(self.selected_dir, base, include_ext=[".py"], max_files=400, progress=_progress)
+            # Start with a broad set; the generator has its own fallbacks too.
+            default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
+            written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
             prd = written.get("requirements_md")
             tests = written.get("tests", [])
             if prd:

@@ -11,6 +11,11 @@ from .openai_helpers import call_openai
 
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".autotestgen", "dist", "build", "__pycache__"}
 BIN_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".gz", ".tar", ".jar", ".exe", ".dmg", ".app"}
+# Broad default set of text/code extensions for initial scans
+DEFAULT_EXTS = [
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs",
+    ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt",
+]
 MAX_FILE_CHARS = 40_000  # cap per-file content
 
 
@@ -137,6 +142,14 @@ def generate_with_openai(
     repo_name = target_repo.name
     _emit(f"[1/3] Scanning files in {target_repo} (filters: {include_ext or 'all'}, max_files={max_files or '∞'})")
     paths = _iter_text_files(target_repo, include_ext=include_ext, max_files=max_files)
+    if len(paths) == 0:
+        # Fallback to defaults if explicit filters yielded nothing
+        if include_ext:
+            _emit(f"No files found for filters {include_ext}; falling back to defaults: {DEFAULT_EXTS}")
+            paths = _iter_text_files(target_repo, include_ext=DEFAULT_EXTS, max_files=max_files)
+        if len(paths) == 0:
+            _emit("Still no files with defaults; scanning all text files (excluding known binaries)")
+            paths = _iter_text_files(target_repo, include_ext=None, max_files=max_files)
     _emit(f"Found {len(paths)} candidate file(s)")
 
     # 1) Per-file summaries
