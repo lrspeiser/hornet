@@ -558,59 +558,80 @@ class HornetApp(ttk.Frame):
         prev_env = os.environ.get("HORNET_TARGET_REPO_PATH")
         os.environ["HORNET_TARGET_REPO_PATH"] = target_repo
         try:
-            for script in scripts:
-                self.log(f"▶ {script.name}")
-                buf_out, buf_err = io.StringIO(), io.StringIO()
-                t0 = time.time()
-                status = "pass"
+        for script in scripts:
+            self.log(f"▶ {script.name}")
+            buf_out, buf_err = io.StringIO(), io.StringIO()
+            t0 = time.time()
+            status = "fail"  # default to fail
+            try:
+                # Provide __name__ == "__main__" and expose HORNET_TARGET_REPO_PATH
+                g = {"__name__": "__main__"}
+                # Prepend the target repo to sys.path so runners can `from main import ...`
+                import sys as _sys
+                _orig_sys_path = list(_sys.path)
+                if target_repo not in _sys.path:
+                    _sys.path.insert(0, target_repo)
+                with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                    runpy.run_path(str(script), init_globals=g)
+            except SystemExit as e:
+                status = "fail" if int(getattr(e, "code", 1) or 1) != 0 else "pass"
+            except Exception:
+                status = "fail"
+                traceback.print_exc(file=buf_err)
+            finally:
                 try:
-                    # Provide __name__ == "__main__" and expose HORNET_TARGET_REPO_PATH
-                    g = {"__name__": "__main__"}
-                    # Prepend the target repo to sys.path so runners can `from main import ...`
-                    import sys as _sys
-                    _orig_sys_path = list(_sys.path)
-                    if target_repo not in _sys.path:
-                        _sys.path.insert(0, target_repo)
-                    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-                        runpy.run_path(str(script), init_globals=g)
-                except SystemExit as e:
-                    status = "fail" if int(getattr(e, "code", 1) or 1) != 0 else "pass"
+                    _sys.path = _orig_sys_path  # restore
                 except Exception:
-                    status = "fail"
-                    traceback.print_exc(file=buf_err)
-                finally:
-                    try:
-                        _sys.path = _orig_sys_path  # restore
-                    except Exception:
-                        pass
-                dt_ms = int((time.time() - t0) * 1000)
-                out_s = buf_out.getvalue().strip()
-                err_s = buf_err.getvalue().strip()
-                log_path = runs_dir / f"{ts_label}__{script.stem}.log"
-                log_path.write_text(
-                    json.dumps({
-                        "script": script.name,
-                        "target_repo": target_repo,
-                        "sys_path_prepended": target_repo,
-                        "status": status,
-                        "duration_ms": dt_ms,
-                        "stdout": out_s,
-                        "stderr": err_s,
-                    }, indent=2),
-                    encoding="utf-8",
-                )
-                self.log(f"   status={status} duration={dt_ms}ms -> {log_path.name}")
-                if out_s:
-                    self.log(f"   stdout: {out_s[:500] + ('…' if len(out_s)>500 else '')}")
-                if err_s:
-                    self.log(f"   stderr: {err_s[:500] + ('…' if len(err_s)>500 else '')}")
-                summary.append((script.name, status, dt_ms))
-        finally:
-            if prev_env is None:
-                os.environ.pop("HORNET_TARGET_REPO_PATH", None)
-            else:
-                os.environ["HORNET_TARGET_REPO_PATH"] = prev_env
+                    pass
+            dt_ms = int((time.time() - t0) * 1000)
+            out_s = buf_out.getvalue().strip()
+            err_s = buf_err.getvalue().strip()
+            log_path = runs_dir / f"{ts_label}__{script.stem}.log"
 
+            # --- Result aggregation from per-case JSON --- #
+            case_results: List[Dict[str, Any]] = []
+            if out_s:
+                for line in out_s.splitlines():
+                    try:
+                        case_results.append(json.loads(line))
+                    except Exception:
+                        pass  # ignore non-json lines
+            case_passed = sum(1 for c in case_results if c.get("status") == "pass")
+            case_total = len(case_results)
+            final_status = "pass" if case_total > 0 and case_passed == case_total else "fail"
+            if final_status == "pass":
+                passed += 1
+            else:
+                failed += 1
+
+            log_path.write_text(
+                json.dumps({
+                    "script": script.name,
+                    "target_repo": target_repo,
+                    "sys_path_prepended": target_repo,
+                    "status": final_status,
+                    "duration_ms": dt_ms,
+                    "cases_passed": case_passed,
+                    "cases_total": case_total,
+                    "raw_stdout": out_s,
+                    "raw_stderr": err_s,
+                }, indent=2),
+                encoding="utf-8",
+            )
+            self.log(f"   status={final_status} ({case_passed}/{case_total} passed) duration={dt_ms}ms -> {log_path.name}")
+            # Log first few lines of stdout/stderr if any
+            if out_s:
+                self.log(f"   stdout: {out_s[:500] + ('…' if len(out_s)>500 else '')}")
+            if err_s:
+                self.log(f"   stderr: {err_s[:500] + ('…' if len(err_s)>500 else '')}")
+            summary.append((script.name, final_status, dt_ms, case_passed, case_total))
+        # Update summary at the end
+        pass_sum = sum(1 for _, s, _, _, _ in summary if s == "pass")
+        fail_sum = len(summary) - pass_sum
+        self.status_var.set(f"Done — pass: {pass_sum}, fail: {fail_sum}")
+        self.log(f"Finished. pass={pass_sum} fail={fail_sum}")
+
+        # Update meta last_run and repo_path
         passed = sum(1 for _, s, _ in summary if s == "pass")
         failed = sum(1 for _, s, _ in summary if s == "fail")
         self.status_var.set(f"Done — pass: {passed}, fail: {failed}")

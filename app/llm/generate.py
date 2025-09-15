@@ -92,11 +92,14 @@ def _aggregate_messages(repo_name: str, file_summaries: List[Dict[str, Any]]) ->
 
 def _runner_messages(repo_name: str, func_item: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
     system = (
-        "Generate a standalone Python runner script for a single function. "
-        "The script must import from the target repo by inserting HORNET_TARGET_REPO_PATH into sys.path. "
-        "Also, before importing, the script should check os.environ['HORNET_TARGET_REPO_PATH'] and prepend it to sys.path if present. "
-        "It should execute a list of example cases, capture pass/fail and exceptions, and print a JSON summary to stdout. "
-        "Do NOT use pytest. Return the script text directly as a JSON string in the 'code' key."
+        "You are an expert Python test engineer. Generate a standalone Python runner script for one function. "
+        "The script MUST:
+- Check and prepend HORNET_TARGET_REPO_PATH to sys.path.
+- NOT use pytest or other test frameworks.
+- For each test case, it must print a JSON object to stdout with keys: 'case' (int), 'inputs' (any), 'expected' (any), 'actual' (any), 'status' (pass/fail), 'summary' (str, < 120 chars, e.g. \"✓ valid email\").
+- If an exception occurs, 'actual' is the traceback and 'status' is fail.
+- It must NOT print a final aggregated summary; that is handled externally. It only prints per-case JSON lines, one per line, and nothing else.
+- Return the script text directly as a JSON string in the 'code' key."
     )
     user = json.dumps({"repo": repo_name, "plan": func_item})
     messages = [
