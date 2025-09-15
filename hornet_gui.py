@@ -7,6 +7,25 @@ import sys, os, io, traceback, time, runpy, re, json, contextlib
 
 APP_NAME = "Hornet"
 STORE_ROOT = Path.home() / ".hornet"
+LOG_ROOT = STORE_ROOT / "logs"
+
+# ---- App-level logging ----
+
+def _ts() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _append_line(fp: Path, line: str) -> None:
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        with fp.open("a", encoding="utf-8") as f:
+            f.write(f"[{_ts()}] {line}\n")
+    except Exception:
+        pass
+
+
+def app_log(line: str) -> None:
+    _append_line(LOG_ROOT / "hornet.log", line)
 
 # ---- Project index helpers (stored alongside tests) ----
 
@@ -95,9 +114,12 @@ def ensure_store(selected_dir: Path) -> dict:
     base = STORE_ROOT / repo_name
     tests = base / "tests"
     runs = base / "runs"
+    logs = base / "logs"
     base.mkdir(exist_ok=True)
     tests.mkdir(exist_ok=True)
     runs.mkdir(exist_ok=True)
+    logs.mkdir(exist_ok=True)
+    app_log(f"ensure_store for {selected_dir} -> {base}")
 
     # Seed example files once
     example = tests / "example_runner.py"
@@ -163,7 +185,8 @@ class HornetApp(ttk.Frame):
 
     def _build_ui(self):
         self.master.title(f"{APP_NAME} Test Runner")
-        self.master.geometry("820x560")
+        self.master.geometry("900x640")
+        app_log("UI started")
 
         # Top controls
         top = ttk.Frame(self)
@@ -176,6 +199,7 @@ class HornetApp(ttk.Frame):
         ttk.Button(top, text="Run tests", command=self.run_tests).pack(side="left", padx=(8, 0))
         ttk.Button(top, text="Set API Key", command=self.set_api_key).pack(side="left", padx=(8, 0))
         ttk.Button(top, text="Generate via OpenAI", command=self.generate_via_openai).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Open app logs", command=self.open_app_logs).pack(side="left", padx=(8, 0))
 
         # Info line
         self.info_var = tk.StringVar(value="")
@@ -190,6 +214,7 @@ class HornetApp(ttk.Frame):
         ttk.Button(proj_top, text="Load", command=self.load_selected_project).pack(side="left", padx=(8,0))
         ttk.Button(proj_top, text="Run", command=self.run_selected_project_tests).pack(side="left", padx=(8,0))
         ttk.Button(proj_top, text="Open tests", command=self.open_selected_project_tests).pack(side="left", padx=(8,0))
+        ttk.Button(proj_top, text="Open logs", command=self.open_selected_project_logs).pack(side="left", padx=(8,0))
         ttk.Button(proj_top, text="Update via OpenAI", command=self.update_selected_project).pack(side="left", padx=(8,0))
         self.projects_list = tk.Listbox(proj_frame, height=6)
         self.projects_list.pack(fill="x", padx=8, pady=(0,8))
@@ -247,6 +272,18 @@ class HornetApp(ttk.Frame):
         except Exception as e:
             messagebox.showerror(APP_NAME, f"Failed to open folder: {e}")
 
+    def open_app_logs(self):
+        try:
+            LOG_ROOT.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "darwin":
+                os.system(f"open '{LOG_ROOT}'")
+            elif os.name == "nt":
+                os.startfile(str(LOG_ROOT))  # type: ignore[attr-defined]
+            else:
+                os.system(f"xdg-open '{LOG_ROOT}'")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to open app logs: {e}")
+
     # ---- Projects panel helpers ----
     def refresh_projects(self):
         self._projects_cache = _list_projects()
@@ -302,6 +339,23 @@ class HornetApp(ttk.Frame):
         except Exception as e:
             messagebox.showerror(APP_NAME, f"Failed to open folder: {e}")
 
+    def open_selected_project_logs(self):
+        proj = self._selected_project()
+        if not proj:
+            messagebox.showinfo(APP_NAME, "Select a project in the list.")
+            return
+        logs_dir = proj["base"] / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "darwin":
+                os.system(f"open '{logs_dir}'")
+            elif os.name == "nt":
+                os.startfile(str(logs_dir))  # type: ignore[attr-defined]
+            else:
+                os.system(f"xdg-open '{logs_dir}'")
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f"Failed to open logs: {e}")
+
     def run_selected_project_tests(self):
         proj = self._selected_project()
         if not proj:
@@ -333,8 +387,13 @@ class HornetApp(ttk.Frame):
         try:
             self.selected_dir = Path(repo_path)
             self.store_paths = {"base": base, "tests": base / "tests", "runs": base / "runs"}
+            logs_dir = base / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            gen_log = logs_dir / f"generate-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            self.log(f"Writing generation log to: {gen_log}")
             def _progress(msg: str):
                 self.log(msg)
+                _append_line(gen_log, msg)
             from app.llm.generate import generate_with_openai
             default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
             written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
@@ -346,10 +405,17 @@ class HornetApp(ttk.Frame):
             })
             _write_meta(base, meta)
             self.info_var.set(f"Tests: {self.store_paths['tests']} | Runs: {self.store_paths['runs']}")
-            self.log(f"Update complete. Generated {len(written.get('tests', []))} runner(s)")
+            done_msg = f"Update complete. Generated {len(written.get('tests', []))} runner(s)"
+            self.log(done_msg); _append_line(gen_log, done_msg)
         except Exception as e:
             tb = traceback.format_exc()
-            self.log(f"Update via OpenAI failed: {e}\n{tb}")
+            err = f"Update via OpenAI failed: {e}"
+            self.log(f"{err}\n{tb}")
+            try:
+                _append_line(gen_log, err)
+                _append_line(gen_log, tb)
+            except Exception:
+                pass
             messagebox.showerror(APP_NAME, f"Update failed: {e}\nSee log pane for details.")
 
     def _discover_test_scripts(self) -> list[Path]:
@@ -405,20 +471,33 @@ class HornetApp(ttk.Frame):
         base = ensure_store(self.selected_dir)["base"]
         self.log("Calling OpenAI to generate PRD and tests… (see OPENAI.md)")
         try:
+            logs_dir = base / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            gen_log = logs_dir / f"generate-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            self.log(f"Writing generation log to: {gen_log}")
             def _progress(msg: str):
                 self.log(msg)
+                _append_line(gen_log, msg)
             # Start with a broad set; the generator has its own fallbacks too.
             default_exts = [".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".cs", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt"]
             written = generate_with_openai(self.selected_dir, base, include_ext=default_exts, max_files=600, progress=_progress)
             prd = written.get("requirements_md")
             tests = written.get("tests", [])
             if prd:
-                self.log(f"PRD → {prd}")
-            self.log(f"Generated {len(tests)} test runner(s)")
+                msg = f"PRD → {prd}"
+                self.log(msg); _append_line(gen_log, msg)
+            done_msg = f"Generated {len(tests)} test runner(s)"
+            self.log(done_msg); _append_line(gen_log, done_msg)
             self.info_var.set(f"Tests: {base / 'tests'} | Runs: {base / 'runs'}")
         except Exception as e:
             tb = traceback.format_exc()
-            self.log(f"OpenAI generation failed: {e}\n{tb}")
+            err = f"OpenAI generation failed: {e}"
+            self.log(f"{err}\n{tb}")
+            try:
+                _append_line(gen_log, err)
+                _append_line(gen_log, tb)
+            except Exception:
+                pass
             messagebox.showerror(APP_NAME, f"Generation failed: {e}\nSee log pane for details.")
 
     def run_tests(self):
